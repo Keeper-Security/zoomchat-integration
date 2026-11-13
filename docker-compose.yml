@@ -1,0 +1,54 @@
+services:
+  # Keeper Commander Service Mode, logged in as the Keeper service account.
+  # Set up the same way as for the Slack app; replace the placeholders.
+  # keeper.service_url in zoom_config.yaml: http://commander-zoom:8900/api/v2
+  commander-zoom:
+    container_name: keeper-service
+    image: keeper/commander:latest
+    command: service-create -p 8900 -c 'search, get, share-record, nsf-share-record, sync-down, server, list-team' -f json -q y -ur XXXXXXXX --ksm-config XXXXXXXX --record XXXXXXXX
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://localhost:8900/health', timeout=2).status == 200 else 1)"
+      interval: 60s
+      timeout: 3s
+      start_period: 10s
+      retries: 30
+    restart: unless-stopped
+
+  zoom-app:
+    container_name: keeper-zoom-app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: keeper/zoom-app:latest
+    environment:
+      - ZOOM_CONFIG_PATH=/app/config/zoom_config.yaml
+      - LOG_LEVEL=INFO
+    volumes:
+      # Zoom credentials + Commander URL / API key (no KSM)
+      - ./zoom_config.yaml:/app/config/zoom_config.yaml:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
+    ports:
+      - "3000:3000"
+    depends_on:
+      commander-zoom:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Public HTTPS endpoint for Zoom. Point the tunnel's public hostname at
+  # http://keeper-zoom-app:3000. Remove this service if you use ngrok or a
+  # reverse proxy instead.
+  cloudflared:
+    container_name: keeper-zoom-tunnel
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - zoom-app
+    restart: unless-stopped
