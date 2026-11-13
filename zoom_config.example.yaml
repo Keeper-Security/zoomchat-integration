@@ -1,0 +1,66 @@
+# ============================================================
+# KEEPER ZOOM APP CONFIGURATION
+# ============================================================
+# Copy to zoom_config.yaml and fill in the values.
+# This file contains secrets: keep it out of source control
+# (it is in .gitignore) and restrict its permissions:
+#   chmod 600 zoom_config.yaml
+
+# ============================================================
+# ZOOM (Marketplace -> Develop -> your user-managed General App)
+# ============================================================
+zoom:
+  client_id: "YOUR_CLIENT_ID"                   # Basic Information -> App Credentials
+  client_secret: "YOUR_CLIENT_SECRET"           # Basic Information -> App Credentials
+  bot_jid: "v1xxxxxxxxxxxx@xmpp.zoom.us"        # Features -> Surface -> Team Chat Subscription
+  secret_token: "YOUR_SECRET_TOKEN"             # Features -> Access -> Secret Token
+  # Channel link .../launch/chat/v2/<base64> decodes to {"sid":"<this value>"}
+  approvals_channel_jid: "xxxxxxxx@conference.xmpp.zoom.us"
+  # Must match the OAuth Redirect URL configured on the app
+  oauth_redirect_url: "https://<public-host>/zoom/oauth/callback"
+  # Optional: Zoom user ID -> Keeper email. A user-managed app can only look up
+  # the email of the user who added it; map everyone else here. The user ID is
+  # logged on each request: "... by <name> (<user id>) -> ..."
+  # user_emails:
+  #   "b_xxxxxxxxxxxxxxxxxxxx": "jane@company.com"
+
+# ============================================================
+# WEBHOOK SERVER (put behind a public HTTPS URL: Cloudflare Tunnel / ngrok)
+# ============================================================
+server:
+  host: "0.0.0.0"
+  port: 3000
+  worker_threads: 8
+
+# ============================================================
+# KEEPER COMMANDER SERVICE MODE
+# ============================================================
+# The service must allow these commands (service-create -c):
+#   search, get, share-record, nsf-share-record, share-folder, nsf-share-folder, list-sf, sync-down, server, list-team
+keeper:
+  service_url: "http://localhost:8900/api/v2"
+  api_key: "your-keeper-api-key"
+
+# ============================================================
+# STORAGE (pending approvals + Zoom OAuth token)
+# ============================================================
+storage:
+  data_dir: "./data"
+
+# ============================================================
+# MULTI-CHANNEL APPROVERS (optional)
+# ============================================================
+# Route each request to the approval channel of the requester's Keeper team.
+# Requests from users in no mapped team go to zoom.approvals_channel_jid.
+multichannel_approver:
+  enabled: false
+  teams:
+    - name: "Developer Team"
+      channel_jid: "xxxxxxxx@conference.xmpp.zoom.us"
+
+# ============================================================
+# APPROVALS
+# ============================================================
+# TESTING ONLY: allow a requester to approve their own request.
+approvals:
+  allow_self_approval: false
