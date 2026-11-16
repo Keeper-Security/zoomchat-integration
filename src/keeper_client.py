@@ -13,11 +13,15 @@
 """
 Keeper Service Mode API client.
 
-Same Commander commands as the Slack app's record and folder flows:
-``search``, ``get``, ``share-record``, ``nsf-share-record``, ``share-folder``,
-``nsf-share-folder``, ``list-sf``, ``sync-down``, ``server`` and ``list-team``.
+Commander commands used by the record, folder, one-time share and
+create-secret flows: ``search``, ``get``, ``share-record``,
+``nsf-share-record``, ``share-folder``, ``nsf-share-folder``, ``list-sf``,
+``one-time-share``, ``share-report``, ``tree``, ``record-add``,
+``nsf-record-add``, ``sync-down``, ``server`` and ``list-team``.
 """
 
+import re
+import shlex
 import time
 import requests
 from typing import List, Optional, Dict, Any, Tuple
@@ -33,7 +37,7 @@ from .models import (
 )
 from .config import KeeperConfig
 from .logger import logger
-from .utils import format_local_time
+from .utils import format_local_time, is_pam_record_type, parse_duration_to_seconds
 from .commander_errors import log_submit_warning, submit_error
 
 
@@ -245,9 +249,12 @@ class KeeperClient:
         self,
         query: str,
         limit: int = 20,
+        for_one_time_share: bool = False,
     ) -> Tuple[List[KeeperRecord], Optional[Dict[str, Any]]]:
         """
         Search for records using Service Mode ``search -c r``.
+        ``for_one_time_share`` drops PAM and Nested Share Folder records, which
+        can't have one-time share links.
 
         Returns ``(records, error)``; ``error`` is only set for Commander
         401/403 submit failures so the caller can tell the approver.
@@ -266,7 +273,7 @@ class KeeperClient:
             logger.debug(f"Record search failed: {err.get('error')}")
             return [], None
 
-        return self._parse_search_records_results(result_data, limit), None
+        return self._parse_search_records_results(result_data, limit, for_one_time_share), None
 
     @staticmethod
     def _pick_search_result_by_uid(data: Any, uid: str) -> Optional[Dict[str, Any]]:
@@ -485,7 +492,9 @@ class KeeperClient:
         data = result_data.get('data')
         return isinstance(data, list) and len(data) > 0, None
 
-    def _parse_search_records_results(self, result_data: Dict, limit: int) -> List[KeeperRecord]:
+    def _parse_search_records_results(
+        self, result_data: Dict, limit: int, for_one_time_share: bool = False,
+    ) -> List[KeeperRecord]:
         """
         Parse search command results for records, including Nested Share
         Folder detection so the card can offer the right permission set.
@@ -503,6 +512,8 @@ class KeeperClient:
             title = item.get('name', '')
             details = item.get('details', '')
             record_type, notes = self._parse_details(details)
+            if for_one_time_share and (is_pam_record_type(record_type) or self._record_is_nsf(details)):
+                continue
 
             if uid and title:
                 records.append(KeeperRecord(
@@ -971,3 +982,192 @@ class KeeperClient:
             return {'success': False, 'error': f"Failed to grant access: {self._error_message(result_data)}"}
         except Exception as e:
             return {'success': False, 'error': f"Error granting Nested Share Folder access: {e}"}
+
+    @staticmethod
+    def _extract_share_url(result_data: Dict[str, Any]) -> Optional[str]:
+        """Find the share link in ``one-time-share create`` output."""
+        url = result_data.get('url') or result_data.get('share_url') or result_data.get('link')
+        if url:
+            return str(url)
+        message = result_data.get('message')
+        lines = message if isinstance(message, list) else [message or '']
+        for line in lines:
+            match = re.search(r'https://\S+', str(line))
+            if match:
+                return match.group(0)
+        return None
+
+    def create_one_time_share(
+        self,
+        record_uid: str,
+        duration_seconds: int,
+        editable: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Create a one-time share link with ``one-time-share create [--editable]
+        <uid> -e <duration>``. The link is returned only to be DMed to the
+        requester; callers must not persist it.
+        """
+        try:
+            expire_in = self._format_duration(duration_seconds)
+            editable_flag = " --editable" if editable else ""
+            result_data, err = self._submit_and_poll(
+                f"one-time-share create{editable_flag} {record_uid} -e {expire_in}", max_wait=30
+            )
+            if err:
+                return err
+
+            if result_data.get('status') != 'success':
+                return {'success': False, 'error': f"Failed to create one-time share: {self._error_message(result_data)}"}
+
+            share_url = self._extract_share_url(result_data)
+            if not share_url:
+                logger.error("One-time share created but no URL found in the Commander response")
+                return {'success': False, 'error': "Share link created but URL not found in response"}
+
+            return {
+                'success': True,
+                'share_url': share_url,
+                'expires_at': format_local_time(datetime.now() + timedelta(seconds=duration_seconds)),
+                'duration': expire_in,
+            }
+        except Exception as e:
+            return {'success': False, 'error': f"Error creating one-time share: {e}"}
+
+    # ------------------------------------------------------------------
+    # Create secret
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _commander_failure(result_data: Optional[Dict[str, Any]], err: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Error dict worth showing the user (rejected / expired session), else None."""
+        if err:
+            return err if err.get('error_code') else None
+        if result_data and result_data.get('status') != 'success':
+            message = KeeperClient._error_message(result_data)
+            if 'session_token_expired' in message or 'session needs to be refreshed' in message.lower():
+                return {'success': False, 'error_code': 'keeper_session_expired',
+                        'error': "Commander's Keeper session has expired. Log in again in Commander "
+                                 "(Service Mode) and retry."}
+        return None
+
+    def get_user_shared_folders(self, user_email: str) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        """
+        Shared folders shared with ``user_email`` (``share-report -f``), as
+        ``{uid, name, type, is_nsf}``. Returns ``(folders, error)``.
+
+        Runs ``sync-down`` first so folders shared since Commander's last sync
+        are included.
+        """
+        sync_failure = self._sync_before_share(f"share-report for {user_email}")
+        if sync_failure:
+            return [], sync_failure
+        result_data, err = self._submit_and_poll("share-report -f --format=json", max_wait=30)
+        failure = self._commander_failure(result_data, err)
+        if failure:
+            return [], failure
+        if err or result_data.get('status') != 'success':
+            logger.warning(f"share-report failed: {err.get('error') if err else self._error_message(result_data)}")
+            return [], None
+
+        data = result_data.get('data', [])
+        folders, seen = [], set()
+        for item in data if isinstance(data, list) else []:
+            if not isinstance(item, dict) or str(item.get('Shared To', '')).lower() != user_email.lower():
+                continue
+            uid, name = item.get('Folder UID', ''), item.get('Folder Name', '')
+            folder_type = item.get('Type', 'Shared Folder')
+            if uid and name and uid not in seen:
+                seen.add(uid)
+                folders.append({
+                    'uid': uid, 'name': name, 'type': folder_type,
+                    'is_nsf': folder_type.strip().lower() == 'nested share folder',
+                })
+        logger.debug(f"Retrieved {len(folders)} shared folder(s) for {user_email}")
+        return folders, None
+
+    def list_subfolders(self, shared_folder_uid: str) -> List[Dict[str, Any]]:
+        """All subfolders inside a shared folder (``tree -s -v``) as ``{uid, name, path, is_nsf}``."""
+        result_data, err = self._submit_and_poll(f"tree -s -v {shlex.quote(shared_folder_uid)}", max_wait=20)
+        if err or result_data.get('status') != 'success':
+            logger.warning(f"tree failed for {shared_folder_uid}")
+            return []
+        data = result_data.get('data', {})
+        subfolders = []
+        for item in (data.get('tree', []) if isinstance(data, dict) else []):
+            if not isinstance(item, dict) or not item.get('uid') or not item.get('name'):
+                continue
+            name = item['name']
+            subfolders.append({
+                'uid': item['uid'], 'name': name, 'path': item.get('path', name),
+                'is_nsf': '[nested share folder]' in name.lower(),
+            })
+        return subfolders
+
+    @staticmethod
+    def _extract_uid_from_create_response(result_data: Dict[str, Any]) -> Optional[str]:
+        uid = result_data.get('uid') or result_data.get('record_uid')
+        if uid:
+            return uid
+        data = result_data.get('data')
+        if isinstance(data, dict) and (data.get('uid') or data.get('record_uid')):
+            return data.get('uid') or data.get('record_uid')
+        if isinstance(data, str) and len(data.strip()) == 22:
+            return data.strip()
+        match = re.search(r'[A-Za-z0-9_-]{22}', KeeperClient._message_text(result_data))
+        return match.group(0) if match else None
+
+    def create_record(
+        self,
+        title: str,
+        folder_uid: Optional[str] = None,
+        is_nsf: bool = False,
+        login: Optional[str] = None,
+        password: Optional[str] = None,
+        url: Optional[str] = None,
+        notes: Optional[str] = None,
+        generate_password: bool = False,
+        self_destruct: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create a login record with ``record-add`` (Classic) or ``nsf-record-add``
+        (Nested Share Folder), in ``folder_uid`` or Commander's default location
+        when omitted. ``self_destruct`` (Classic only) is a duration such as
+        ``"1h"``. The command contains the password, so it is never logged.
+        """
+        try:
+            parts = ["nsf-record-add" if is_nsf else "record-add"]
+            if folder_uid:
+                parts.append(f"--folder {shlex.quote(folder_uid)}")
+            parts += ["--record-type login", f"--title {shlex.quote(title)}"]
+            if self_destruct and not is_nsf:
+                parts.append(f"--self-destruct {self._format_duration(parse_duration_to_seconds(self_destruct))}")
+            if notes:
+                parts.append(f"--notes {shlex.quote(notes.replace(chr(10), chr(92) + 'n'))}")
+            if login:
+                parts.append(f"login={shlex.quote(login)}")
+            if password:
+                parts.append(f"password={shlex.quote(password)}")
+            elif generate_password:
+                parts.append("password=$GEN")
+            if url:
+                parts.append(f"url={shlex.quote(url)}")
+            if is_nsf:
+                parts.append("-f")
+
+            result_data, err = self._submit_and_poll(" ".join(parts), max_wait=30)
+            if err:
+                return err
+            if result_data.get('status') != 'success':
+                failure = self._commander_failure(result_data, None)
+                if failure:
+                    return failure
+                return {'success': False, 'error': f"Failed to create record: {self._error_message(result_data)}"}
+
+            record_uid = self._extract_uid_from_create_response(result_data)
+            if not record_uid:
+                logger.warning("Record created but its UID could not be parsed from the response")
+            return {'success': True, 'record_uid': record_uid or 'Unknown', 'title': title}
+        except Exception as e:
+            logger.error(f"Exception creating record: {type(e).__name__}")
+            return {'success': False, 'error': f"Error creating record: {type(e).__name__}"}

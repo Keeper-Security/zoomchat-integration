@@ -12,8 +12,6 @@
 
 """
 Keeper Zoom Team Chat App.
-
-Zoom port of the Keeper Slack App (https://github.com/Keeper-Security/slack-app).
 """
 
 __version__ = "0.1.0"

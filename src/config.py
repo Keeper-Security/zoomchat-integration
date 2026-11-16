@@ -14,8 +14,8 @@
 Configuration management for Keeper Zoom Integration.
 
 All configuration (Zoom credentials, Commander Service Mode URL / API key and
-optional features) is read from a single YAML file. Unlike the Slack app,
-Keeper Secrets Manager is not used.
+optional features) is read from a single YAML file. Keeper Secrets Manager
+is not used.
 """
 
 import os
@@ -254,7 +254,7 @@ class Config:
     def allow_self_approval(self) -> bool:
         """
         Testing only: let a requester approve their own request (single-user
-        test accounts). Off by default, as in the Slack app.
+        test accounts). Off by default.
         """
         return bool((self._data.get('approvals', {}) or {}).get('allow_self_approval', False))
 

@@ -22,6 +22,7 @@ from ..logger import logger
 from ..models import RequestType
 from ..utils import is_channel_jid
 from ..views import build_usage_content, text_content
+from ..handlers.create_secret import handle_create_secret_command
 from .request_access import handle_access_request
 
 ACCESS_SUBCOMMANDS = {
@@ -29,11 +30,12 @@ ACCESS_SUBCOMMANDS = {
     "request_record": RequestType.RECORD,
     "request-folder": RequestType.FOLDER,
     "request_folder": RequestType.FOLDER,
+    "one-time-share": RequestType.ONE_TIME_SHARE,
+    "one_time_share": RequestType.ONE_TIME_SHARE,
 }
 HELP_SUBCOMMANDS = ("", "help", "-h", "--help")
-PLANNED_SUBCOMMANDS = (
-    "one-time-share", "self-destructing-share", "create-record", "create-secret", "request-pamworkflow",
-)
+CREATE_SECRET_SUBCOMMANDS = ("create-secret", "create_secret")
+PLANNED_SUBCOMMANDS = ("request-pamworkflow",)
 
 
 def handle_command(payload: Dict[str, Any], zoom_client, config, keeper_client, store):
@@ -64,6 +66,8 @@ def handle_command(payload: Dict[str, Any], zoom_client, config, keeper_client, 
     if subcommand in ACCESS_SUBCOMMANDS:
         handle_access_request(payload, text, ACCESS_SUBCOMMANDS[subcommand],
                               zoom_client, config, keeper_client, store)
+    elif subcommand in CREATE_SECRET_SUBCOMMANDS:
+        handle_create_secret_command(payload, zoom_client, config, keeper_client, store)
     elif subcommand in HELP_SUBCOMMANDS:
         respond(build_usage_content())
     elif subcommand in PLANNED_SUBCOMMANDS:

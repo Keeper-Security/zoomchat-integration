@@ -13,9 +13,7 @@
 """
 Persistent store for approval requests.
 
-Slack sends the full request back in the button ``value`` and the approver's
-dropdown choices in ``state``. Zoom sends only the clicked button's value, so
-each request (and the approver's current selections) is kept here, keyed by
+Zoom sends only the clicked button's value, so each request (and the approver's current selections) is kept here, keyed by
 approval ID, and written to a JSON file so pending cards survive restarts.
 """
 

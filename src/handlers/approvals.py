@@ -26,24 +26,28 @@ from ..utils import (
     format_approval_audit_log,
     format_duration,
     format_timestamp,
-    get_duration_options,
     is_permission_conflict_error,
     is_record_owner_error,
     parse_duration_to_seconds,
 )
 from ..views import (
     ACTION_APPROVE, ACTION_CHANGE_RECORD, ACTION_DENY, ACTION_PICK, ACTION_SEARCH,
+    ACTION_NEW_RECORD, ACTION_NEW_RECORD_BACK, ACTION_NEW_RECORD_SUBMIT, ACTION_PERMISSION_MODEL,
+    SELECT_SELF_DESTRUCT,
+    CS_CANCEL, CS_CREATE, CS_NEXT,
     SELECT_DURATION, SELECT_PERMISSION, SELECT_RECORD, SELECT_ROTATE,
     build_access_denied_content, build_access_granted_content,
-    build_invitation_sent_content, decode_value, is_pam_target,
-    default_permission, is_permanent_only, now_display, permission_options, select_item,
+    build_invitation_sent_content, build_share_link_content, decode_value, is_pam_target,
+    request_duration_options, request_is_permanent_only, request_permission_options,
+    default_permission, now_display, select_item, self_destruct_for,
     text_content, update_approval_card,
 )
 from ..logger import logger
+from .forms import submitted_values
 
 
 SELF_APPROVAL_MESSAGE = (
-    "🚫 You cannot approve your own request. "
+    ":no_entry_sign: You cannot approve your own request. "
     "Please ask your admin or another team member to review and approve it on your behalf."
 )
 
@@ -122,32 +126,39 @@ def handle_interactive_action(payload: Dict[str, Any], zoom_client, config, keep
         InteractionContext(payload, config).reply(zoom_client, "Select an item in the list first.")
     elif action == ACTION_CHANGE_RECORD:
         _clear_record(approval_id, payload, zoom_client, config, store)
+    elif action == ACTION_NEW_RECORD:
+        from .create_record import open_create_record
+        open_create_record(payload, approval_id, zoom_client, config, store)
+    elif action == ACTION_NEW_RECORD_BACK:
+        from .create_record import close_create_record
+        close_create_record(payload, approval_id, zoom_client, config, store)
+    elif action == ACTION_PERMISSION_MODEL:
+        from .create_record import choose_permission_model
+        choose_permission_model(payload, approval_id, arg, zoom_client, config, store)
+    elif action == CS_CANCEL:
+        from .create_secret import cancel_create_secret
+        cancel_create_secret(payload, zoom_client)
     else:
         logger.warning(f"Unknown button value: {value!r}")
 
 
 def handle_form_submit(payload: Dict[str, Any], zoom_client, config, keeper_client, store):
     """
-    Handle ``chat_message.submit`` from a form card (the search results radio
-    list). All inputs arrive in ``payload.object.submit_items``.
+    Handle ``chat_message.submit`` from a form card: the search results radio
+    list, the approver's Create New Record form, or the create-secret cards.
+    All inputs arrive in ``payload.object.submit_items``.
     """
     obj = payload.get("object") or {}
     items = obj.get("submit_items") or []
-    logger.debug(f"Form submit items: {items}")
+    # Values can include a typed password (create-secret), so log only the shape
+    logger.debug(f"Form submit items: {[sorted(item) for item in items]}")
 
-    choice = button = ""
-    for item in items:
-        for kind, data in item.items():
-            if not isinstance(data, dict):
-                continue
-            if kind == "actionItem":
-                button = data.get("value", "")
-                continue
-            value = (data.get("value")
-                     or (data.get("selected_option") or {}).get("value")
-                     or (data.get("selected_item") or {}).get("value") or "")
-            if isinstance(value, str) and value.startswith(f"{SELECT_RECORD}|"):
-                choice = value
+    button = next((item["actionItem"].get("value", "") for item in items
+                   if isinstance(item.get("actionItem"), dict)), "")
+    if button.split("|", 1)[0] in (CS_NEXT, CS_CREATE):
+        from .create_secret import handle_create_secret_submit
+        handle_create_secret_submit(button, items, payload, zoom_client, config, keeper_client)
+        return
 
     ctx_payload = {
         "userId": payload.get("operator_id", ""),
@@ -156,6 +167,13 @@ def handle_form_submit(payload: Dict[str, Any], zoom_client, config, keeper_clie
         "toJid": obj.get("to_jid", ""),
         "accountId": payload.get("account_id", ""),
     }
+    action, approval_id, _ = decode_value(button)
+    if action == ACTION_NEW_RECORD_SUBMIT:
+        from .create_record import handle_create_record_submit
+        handle_create_record_submit(approval_id, items, ctx_payload, zoom_client, config, keeper_client, store)
+        return
+
+    choice = submitted_values(items, (SELECT_RECORD,)).get(SELECT_RECORD, "")
     if not choice:
         if button:
             InteractionContext(ctx_payload, config).reply(zoom_client, "Select an item in the list first.")
@@ -188,6 +206,8 @@ def handle_interactive_select(payload: Dict[str, Any], zoom_client, config, keep
     if not items:
         return
     kind, approval_id, arg = decode_value(items[0].get("value", ""))
+    if kind == SELECT_SELF_DESTRUCT:
+        return  # Read from the Create New Record form submit
     _apply_choice(kind, approval_id, arg, payload, zoom_client, config, keeper_client, store)
 
 
@@ -222,13 +242,13 @@ def _apply_choice(kind: str, approval_id: str, arg: str, payload: Dict[str, Any]
             logger.debug(f"{approval_id}: approver {ctx.user_name} selected {request.item_noun} {item.uid}")
 
         elif kind == SELECT_PERMISSION and record:
-            if arg not in {v for v, _ in permission_options(record)}:
+            if arg not in {v for v, _ in request_permission_options(request, record)}:
                 logger.warning(f"Invalid permission {arg!r} for {approval_id}")
                 return
             request.permission = arg
 
         elif kind == SELECT_DURATION and record:
-            allowed = {v for v, _ in get_duration_options(exclude_permanent=is_pam_target(record))}
+            allowed = {v for v, _ in request_duration_options(request, record)}
             if arg not in allowed:
                 logger.warning(f"Invalid duration {arg!r} for {approval_id}")
                 return
@@ -253,18 +273,83 @@ def _resolve_grant(request: AccessRequest, record):
     """
     Turn the stored selections into ``(permission, duration_seconds,
     duration_value, duration_text)``. Ownership / share / manage-users
-    permissions are always permanent, matching the Slack app.
+    permissions are always permanent. A record the approver created with
+    self-destruct is shared View Only for the self-destruct duration.
     """
-    if request.permission not in {v for v, _ in permission_options(record)}:
+    self_destruct = self_destruct_for(request, record)
+    if self_destruct:
+        request.permission = PermissionLevel.VIEW_ONLY.value
+        return (PermissionLevel.VIEW_ONLY, parse_duration_to_seconds(self_destruct), self_destruct,
+                format_duration(self_destruct))
+    if request.permission not in {v for v, _ in request_permission_options(request, record)}:
         request.permission = default_permission(record)
-    enum = NSFPermissionRole if record.is_nsf else PermissionLevel
+    enum = NSFPermissionRole if record.is_nsf and not request.is_one_time_share else PermissionLevel
     permission = enum(request.permission)
+    if request.is_one_time_share and request.duration not in {v for v, _ in request_duration_options(request, record)}:
+        request.duration = "5m"
 
-    if is_permanent_only(record, permission.value) or request.duration == "permanent":
+    if request_is_permanent_only(request, record, permission.value) or request.duration == "permanent":
         return permission, None, "permanent", "No Expiration"
 
     duration_value = request.duration or "5m"
     return permission, parse_duration_to_seconds(duration_value), duration_value, format_duration(duration_value)
+
+
+def _approve_one_time_share(request: AccessRequest, record, permission, duration_seconds, duration_text,
+                            requester, approver_email, ctx, zoom_client, keeper_client, store, back_to_pending):
+    """Create the one-time share link and DM it to the requester (never stored or posted to the channel)."""
+    approval_id = request.approval_id
+    try:
+        result = keeper_client.create_one_time_share(
+            record_uid=record.uid,
+            duration_seconds=duration_seconds,
+            editable=permission == PermissionLevel.CAN_EDIT,
+        )
+    except Exception as e:
+        logger.error(f"Error creating one-time share: {e}", exc_info=True)
+        result = {'success': False, 'error': f"Error creating one-time share: {e}"}
+
+    request.permission = permission.value
+    if result.get('success') and result.get('share_url'):
+        request.status = RequestStatus.APPROVED
+        request.resolved_at = now_display()
+        request.expires_at = result.get('expires_at', duration_text)
+        store.save(request)
+        _safe_update_card(zoom_client, request)
+        zoom_client.send_dm(
+            request.requester_jid, build_share_link_content(request, result['share_url']), request.account_id,
+        )
+        logger.info(format_approval_audit_log(
+            approval_id=approval_id,
+            request_type=request.request_type,
+            identifier=record.uid,
+            requester_email=requester,
+            approver_email=approver_email,
+            permission=permission.value,
+            duration_text=duration_text,
+        ))
+        return
+
+    error_message = str(result.get('error', 'Unknown error'))
+    error_text = " ".join(error_message.split())
+    if result.get('error_code') in (COMMAND_NOT_ALLOWED, COMMANDER_UNAUTHORIZED, "keeper_session_expired"):
+        back_to_pending(error_text)
+        ctx.reply(
+            zoom_client,
+            f"*Cannot Create One-Time Share*\n\n{error_message}\n\n*Request ID:* `{approval_id}`\n"
+            f"*Record:* {record.title}\n\nThe approval request remains active.",
+        )
+    else:
+        request.status = RequestStatus.FAILED
+        request.status_text = f"One-time share failed: {error_text}"
+        request.resolved_at = format_timestamp()
+        store.save(request)
+        _safe_update_card(zoom_client, request)
+    logger.info(
+        f"Failed [approval_id={approval_id}]: one-time share (UID: {record.uid}), requester {requester}, "
+        f"approver {approver_email}, permission {permission.value}, duration {duration_text}, "
+        f"error \"{error_text}\""
+    )
 
 
 def handle_approve_action(payload, approval_id, zoom_client, config, keeper_client, store):
@@ -313,6 +398,12 @@ def handle_approve_action(payload, approval_id, zoom_client, config, keeper_clie
 
         user_email = zoom_client.get_user_email(request.requester_id, hint=request.requester_email)
         approver_email = zoom_client.get_user_email(ctx.user_id, hint=ctx.user_email) or ctx.user_name
+
+        if request.is_one_time_share:
+            _approve_one_time_share(request, record, permission, duration_seconds, duration_text,
+                                    user_email or request.requester_name, approver_email,
+                                    ctx, zoom_client, keeper_client, store, back_to_pending)
+            return
 
         if not user_email:
             back_to_pending(

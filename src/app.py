@@ -13,10 +13,9 @@
 """
 Keeper Zoom App - webhook server.
 
-Slack delivers events over Socket Mode; Zoom POSTs them to the Bot Endpoint
-URL. Every request is verified with the Secret Token (``x-zm-signature``),
-acknowledged immediately (Zoom expects a reply within 3 seconds, like Slack's
-``ack()``), and handled on a worker thread.
+Zoom POSTs events to the Bot Endpoint URL. Every request is verified with
+the Secret Token (``x-zm-signature``), acknowledged immediately (Zoom expects
+a reply within 3 seconds), and handled on a worker thread.
 
 Routes:
     POST /zoom/webhook         slash commands, button clicks, dropdowns, app events

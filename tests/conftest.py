@@ -89,6 +89,17 @@ class FakeKeeperClient:
         self.folder_grants = []
         self.nsf_folder_grants = []
         self.syncs = 0
+        self.shares = []
+        self.share_result = None
+        self.shared_folders = {"riley@example.com": [
+            {"uid": FOLDER_UID, "name": "Staging creds", "type": "Shared Folder", "is_nsf": False},
+            {"uid": NSF_FOLDER_UID, "name": "NSF Team", "type": "Nested Share Folder", "is_nsf": True},
+        ]}
+        self.shared_folders_error = None
+        self.subfolders = {FOLDER_UID: [{"uid": "SuBfOlDeRuId0123456789", "name": "db",
+                                         "path": "Staging creds/db", "is_nsf": False}]}
+        self.created = []
+        self.create_result = {"success": True, "record_uid": "NeWrEcOrDuId0123456789", "title": "x"}
         self.grant_result = {"success": True, "expires_at": "2026-10-30 12:00 UTC"}
 
     def health_check(self):
@@ -103,8 +114,9 @@ class FakeKeeperClient:
         self.syncs += 1
         return True, None
 
-    def search_records(self, query, limit=20):
-        return [r for r in self.records.values() if query.lower() in r.title.lower()], None
+    def search_records(self, query, limit=20, for_one_time_share=False):
+        return [r for r in self.records.values() if query.lower() in r.title.lower()
+                and not (for_one_time_share and (r.is_nsf or "pam" in r.record_type.lower()))], None
 
     def get_folder_by_uid(self, uid):
         if uid in self.records:
@@ -127,6 +139,28 @@ class FakeKeeperClient:
     def grant_nsf_folder_access(self, folder_uid, user_email, role, duration_seconds=None):
         self.nsf_folder_grants.append(dict(uid=folder_uid, email=user_email, role=role, duration=duration_seconds))
         return dict(self.grant_result)
+
+    def get_user_shared_folders(self, email):
+        if self.shared_folders_error:
+            return [], self.shared_folders_error
+        return [dict(f) for f in self.shared_folders.get(email, [])], None
+
+    def list_subfolders(self, uid):
+        return [dict(sf) for sf in self.subfolders.get(uid, [])]
+
+    def create_record(self, title, folder_uid=None, is_nsf=False, login=None, password=None, url=None,
+                      notes=None, generate_password=False, self_destruct=None):
+        created = dict(title=title, folder_uid=folder_uid, is_nsf=is_nsf, login=login,
+                       password=password, url=url, notes=notes, generate_password=generate_password)
+        if self_destruct:
+            created["self_destruct"] = self_destruct
+        self.created.append(created)
+        return dict(self.create_result)
+
+    def create_one_time_share(self, record_uid, duration_seconds, editable=False):
+        self.shares.append(dict(uid=record_uid, duration=duration_seconds, editable=editable))
+        return dict(self.share_result or {"success": True, "share_url": "https://keepersecurity.com/vault/share#SECRET",
+                                          "expires_at": "2026-11-13 12:00 IST"})
 
     def get_user_teams(self, email):
         return []

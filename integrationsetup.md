@@ -1,6 +1,6 @@
 # Keeper Zoom Team Chat App – Integration Setup Guide
 
-Step-by-step guide to create, configure, and add (install) the Keeper Security chatbot in **Zoom Team Chat** as a **private, self-hosted app**, the Zoom equivalent of the [Keeper Slack App](https://docs.keeper.io/keeperpam/secrets-manager/integrations/slack-app).
+Step-by-step guide to create, configure, and add (install) the Keeper Security chatbot in **Zoom Team Chat** as a **private, self-hosted app**.
 
 > **Status:** Draft for internal development and testing. Steps marked **🔎 Verify** are not yet confirmed on a live Zoom account and should be validated during first setup.
 
@@ -24,9 +24,8 @@ Step-by-step guide to create, configure, and add (install) the Keeper Security c
 14. [Step 12 – Verify the setup (smoke tests)](#step-12--verify-the-setup-smoke-tests)
 15. [Step 13 – Deploy with Commander (planned)](#step-13--deploy-with-commander-planned)
 16. [Optional – Create the app from a manifest](#optional--create-the-app-from-a-manifest)
-17. [Slack → Zoom terminology mapping](#slack--zoom-terminology-mapping)
-18. [Troubleshooting](#troubleshooting)
-19. [References](#references)
+17. [Troubleshooting](#troubleshooting)
+18. [References](#references)
 
 ---
 
@@ -45,15 +44,15 @@ Step-by-step guide to create, configure, and add (install) the Keeper Security c
                          Keeper Secrets Manager (stores all config/credentials)
 ```
 
-Key differences from Slack:
+Key points:
 
-| | Slack App | Zoom App |
-|---|---|---|
-| Event delivery | Socket Mode (outbound only, no public URL) | **HTTPS webhook** to a "Bot Endpoint URL" (public URL required, e.g. via a Cloudflare Tunnel) |
-| Commands | 4 slash commands | **1 slash command** with sub-commands: `/keeper request-record …` |
-| Bot token | Static `xoxb-` token | Short-lived (1 hour) token requested with Client ID + Secret (`client_credentials`) |
-| Request verification | Signing secret | **Secret Token**: HMAC-SHA256 `x-zm-signature` header |
-| Distribution | Created in the customer's workspace | **Private app** created in the customer's Zoom account; never published to the Marketplace |
+| | Zoom App |
+|---|---|
+| Event delivery | **HTTPS webhook** to a "Bot Endpoint URL" (public URL required, e.g. via a Cloudflare Tunnel) |
+| Commands | **1 slash command** with sub-commands: `/keeper request-record …` |
+| Bot token | Short-lived (1 hour) token requested with Client ID + Secret (`client_credentials`) |
+| Request verification | **Secret Token**: HMAC-SHA256 `x-zm-signature` header |
+| Distribution | **Private app** created in the customer's Zoom account; never published to the Marketplace |
 
 ---
 
@@ -66,7 +65,7 @@ Key differences from Slack:
 | Zoom admin | Someone who can change account Chat settings (Step 2). The app itself is **user-managed**, so any developer-enabled user can add it. |
 | Linux VM + Docker | Outbound HTTPS/443 to Zoom and Keeper |
 | Public HTTPS URL | Cloudflare Tunnel (recommended) or ngrok, pointing to the Zoom app container. TLS 1.2+. |
-| Keeper Commander | Logged in as the Keeper service account (same as the Slack app) |
+| Keeper Commander | Logged in as the Keeper service account |
 | Keeper Secrets Manager | KSM or KeeperPAM license (stores the configuration) |
 | Matching emails | Users' Zoom email must match their Keeper email (used for permissions and folder visibility) |
 
@@ -110,7 +109,7 @@ Zoom must be able to POST events to the app. The URL must be up **before** you s
 
 1. In Cloudflare Zero Trust → **Networks → Tunnels**, create a tunnel and copy its **tunnel token**.
 2. Add a public hostname, e.g. `keeper-zoom.company.com` → `http://keeper-zoom-app:3000`.
-3. Run `cloudflared` as a container next to the app (the planned `zoom-app-setup` command will generate this, see Step 13).
+3. Run `cloudflared` as a container next to the app (the planned `zoom-chat-app-setup` command will generate this, see Step 13).
 
 **Option B – ngrok (development / testing)**
 
@@ -241,7 +240,7 @@ In Zoom terminology, apps are **added**, not installed.
    - From any event payload the bot receives in that channel (`toJid`).
 4. Build the **Channel JID**: `<CHANNEL_ID>@conference.xmpp.zoom.us`
 
-> Like Slack, this is the **default / fallback** approvals channel. EPM (PEDM) and SSO device approvals always go here. Multi-channel approver channels (one per Keeper team) are created the same way.
+> This is the **default / fallback** approvals channel. EPM (PEDM) and SSO device approvals always go here. Multi-channel approver channels (one per Keeper team) are created the same way; that feature is excluded from the current SOW milestone.
 
 ---
 
@@ -249,16 +248,16 @@ In Zoom terminology, apps are **added**, not installed.
 
 Store these in a password manager until you run the setup command (Step 13). Never commit them to source control.
 
-| Value | Where to find it | Slack equivalent |
-|---|---|---|
-| **Account ID** | Not needed in the config: the app uses the `accountId` Zoom sends with every event. Only needed for the manual curl test in 12.2 (take it from any event payload). | Workspace / team ID |
-| **Client ID** | Basic Information → App Credentials | – |
-| **Client Secret** | Basic Information → App Credentials | Bot token (`xoxb-`), used to mint one |
-| **Bot JID** | Features → Surface → Team Chat Subscription | Bot user ID |
-| **Secret Token** | Features → Access | Signing secret |
-| **Approvals Channel JID** | Step 10 | Approvals channel ID (`C0…`) |
-| **Public endpoint URL** | Step 3 | – (Socket Mode needed none) |
-| **Cloudflare tunnel token** (if used) | Cloudflare Zero Trust | App-level token (`xapp-`), the "connection" credential |
+| Value | Where to find it |
+|---|---|
+| **Account ID** | Not needed in the config: the app uses the `accountId` Zoom sends with every event. Only needed for the manual curl test in 12.2 (take it from any event payload). |
+| **Client ID** | Basic Information → App Credentials |
+| **Client Secret** | Basic Information → App Credentials |
+| **Bot JID** | Features → Surface → Team Chat Subscription |
+| **Secret Token** | Features → Access |
+| **Approvals Channel JID** | Step 10 |
+| **Public endpoint URL** | Step 3 |
+| **Cloudflare tunnel token** (if used) | Cloudflare Zero Trust |
 
 ---
 
@@ -310,7 +309,7 @@ valid if signature == <x-zm-signature header>
 
 ## Step 13 – Deploy with Commander (planned)
 
-This mirrors Steps 3–5 of the Slack app documentation. It depends on a new **`zoom-app-setup`** command in Keeper Commander (not built yet).
+It depends on a new **`zoom-chat-app-setup`** command in Keeper Commander (not built yet).
 
 1. Log in to Commander as the Keeper service account:
    ```
@@ -319,9 +318,9 @@ This mirrors Steps 3–5 of the Slack app documentation. It depends on a new **`
    ```
 2. Run:
    ```
-   My Vault> zoom-app-setup
+   My Vault> zoom-chat-app-setup
    ```
-   - **Phase 1 – Docker Service Mode setup** (same as `slack-app-setup`): shared folder, config record, KSM app, client device, base64 KSM config.
+   - **Phase 1 – Docker Service Mode setup**: shared folder, config record, KSM app, client device, base64 KSM config.
    - **Phase 2 – Zoom app configuration** prompts: Account ID, Client ID, Client Secret, Bot JID, Secret Token, Approvals Channel JID, public endpoint / Cloudflare tunnel token, enable PEDM? (+ interval), enable Device Approval? (+ interval), enable multi-channel approvers? (team → channel JID, optional folder/record UIDs).
    - Values are saved to a **"Commander Service Mode Zoom App Config"** vault record, never to plaintext files.
 3. Quit Commander and remove the local config to avoid device-token conflicts:
@@ -341,7 +340,7 @@ This mirrors Steps 3–5 of the Slack app documentation. It depends on a new **`
      commander:
        container_name: keeper-service
        image: keeper/commander:latest
-       # service-create ... (same as Slack setup)
+       # service-create ...
      zoom-app:
        container_name: keeper-zoom-app
        image: keeper/zoom-app:latest
@@ -367,7 +366,7 @@ This mirrors Steps 3–5 of the Slack app documentation. It depends on a new **`
 
 ## Optional – Create the app from a manifest
 
-Zoom supports creating and updating a General App from a JSON manifest (similar to the Slack app manifest). Use it to skip most of Steps 5–8.
+Zoom supports creating and updating a General App from a JSON manifest. Use it to skip most of Steps 5–8.
 
 1. Marketplace → **Developer → Develop → Build from an app manifest**.
 2. Download the **manifest template** from that screen (always use the latest template; old ones fail validation).
@@ -407,27 +406,6 @@ To update an existing app later (e.g. a new sub-command): app → **Basic Inform
 
 ---
 
-## Slack → Zoom terminology mapping
-
-| Slack | Zoom |
-|---|---|
-| api.slack.com/apps | marketplace.zoom.us → Developer |
-| Create app from manifest | Build from an app manifest (General App) |
-| Install to Workspace | **Add App** (user-managed: Local test → Add app) |
-| Bot User OAuth Token (`xoxb-`) | Chatbot token from Client ID + Secret (1-hour) |
-| App-level token (`xapp-`) / Socket Mode | Public Bot Endpoint URL (Cloudflare Tunnel) |
-| Signing Secret | Secret Token |
-| Bot user ID | Bot JID |
-| Channel ID `C0…` | Channel JID `<id>@conference.xmpp.zoom.us` |
-| User ID `U0…` | User ID / User JID `<id>@xmpp.zoom.us` |
-| `/invite @Keeper Security` | Channel → Members → Integrations → **Add apps** |
-| Block Kit | Chatbot message cards (Zoom App Card Builder) |
-| Ephemeral message | DM from the bot (`visible_to_user` is admin-managed only) |
-| Modals | Not available for chatbots. Interactive cards (Phase 1) or App Shortcut web view (Phase 2) |
-| App Home tab | Welcome / help card in the bot's DM + `/keeper settings` |
-
----
-
 ## Troubleshooting
 
 | Problem | Likely cause | Fix |
@@ -455,7 +433,4 @@ To update an existing app later (e.g. a new sub-command): app → **Basic Inform
 - Zoom – Authorize / chatbot token: <https://developers.zoom.us/docs/chat/installation-and-authentication/>
 - Zoom – Send, edit, delete messages: <https://developers.zoom.us/docs/chat/send-edit-and-delete-messages/>
 - Zoom – Add app to channel: <https://developers.zoom.us/docs/chat/tutorial/add-app-to-channel/>
-- Zoom – Migrating from Slack: <https://developers.zoom.us/docs/chat/chatbot/extend/>
 - Zoom – Private and beta apps: <https://developers.zoom.us/docs/distribute/sharing-private-and-beta-apps/>
-- Keeper – Slack App docs: <https://docs.keeper.io/keeperpam/secrets-manager/integrations/slack-app>
-- Keeper – Slack App source: <https://github.com/Keeper-Security/slack-app>

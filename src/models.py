@@ -21,6 +21,7 @@ class RequestType(Enum):
     """Type of access request."""
     RECORD = "record"
     FOLDER = "folder"
+    ONE_TIME_SHARE = "one_time_share"
 
 
 class PermissionLevel(Enum):
@@ -160,9 +161,8 @@ class AccessRequest:
     """
     Represents a record or folder access request and the approver's current choices.
 
-    Slack keeps the request in the button ``value`` and reads the approver's
-    dropdown choices from the interaction ``state``. Zoom sends neither on a
-    button click, so the full request lives here and is persisted by
+    Zoom sends only the clicked value on a button click (no request data or
+    dropdown state), so the full request lives here and is persisted by
     :class:`~src.approval_store.ApprovalStore`.
     """
 
@@ -206,7 +206,7 @@ class AccessRequest:
 
     status: str = RequestStatus.PENDING
 
-    # Approver selections (Slack: card state)
+    # Approver selections
     selected: Optional[Dict[str, Any]] = None
     """Item the approver is granting (KeeperRecord or KeeperFolder as dict)"""
 
@@ -226,6 +226,19 @@ class AccessRequest:
     banner: Optional[str] = None
     """Warning shown on the card (e.g., last approval attempt failed)"""
 
+    # Approver-created record ("Create New Record" on the search results)
+    creating_record: bool = False
+    """Card is showing the Create New Record form"""
+
+    new_record_classic: bool = False
+    """Permission model chosen on the form (Classic shows the self-destruct option)"""
+
+    created_record_uid: Optional[str] = None
+    """Record the approver created for this request"""
+
+    self_destruct: Optional[str] = None
+    """Self-destruct duration of ``created_record_uid``; its grant is View Only for that long"""
+
     # Resolution
     approver_name: Optional[str] = None
     resolved_at: Optional[str] = None
@@ -236,6 +249,10 @@ class AccessRequest:
     @property
     def is_folder(self) -> bool:
         return self.request_type == RequestType.FOLDER.value
+
+    @property
+    def is_one_time_share(self) -> bool:
+        return self.request_type == RequestType.ONE_TIME_SHARE.value
 
     @property
     def item_noun(self) -> str:

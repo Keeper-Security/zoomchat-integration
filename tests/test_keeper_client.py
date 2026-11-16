@@ -121,3 +121,13 @@ def test_search_sanitizes_query(make_client):
     kc = make_client(results={"search -c r": {"status": "success", "data": []}})
     kc.search_records('prod"; rm -rf /')
     assert kc.session.commands[-1] == 'search -c r "prod rm -rf /" --format=json'
+
+
+def test_create_record_without_folder_and_self_destruct(make_client):
+    kc = make_client(results={"record-add": {"status": "success", "message": [UID]},
+                              "nsf-record-add": {"status": "success", "message": [UID]}})
+    assert kc.create_record("t", login="bob", generate_password=True, self_destruct="1h")["record_uid"] == UID
+    assert kc.session.commands[-1] == "record-add --record-type login --title t --self-destruct 1h login=bob password=$GEN"
+
+    kc.create_record("t", is_nsf=True, login="bob", generate_password=True, self_destruct="1h")
+    assert kc.session.commands[-1] == "nsf-record-add --record-type login --title t login=bob password=$GEN -f"

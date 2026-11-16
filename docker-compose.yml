@@ -1,6 +1,6 @@
 services:
   # Keeper Commander Service Mode, logged in as the Keeper service account.
-  # Set up the same way as for the Slack app; replace the placeholders.
+  # Replace the placeholders.
   # keeper.service_url in zoom_config.yaml: http://commander-zoom:8900/api/v2
   commander-zoom:
     container_name: keeper-service

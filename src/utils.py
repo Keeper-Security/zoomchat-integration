@@ -70,6 +70,11 @@ def is_pam_record_type(record_type: str) -> bool:
     return bool(record_type) and 'pam' in record_type.lower()
 
 
+def is_pam_record_type(record_type: str) -> bool:
+    """True for any PAM record type (pamUser, pamMachine, pamDatabase, ...)."""
+    return bool(record_type) and 'pam' in record_type.lower()
+
+
 def is_pam_user_record_type(record_type: str) -> bool:
     """True only for the pamUser record type (rotation flow target)."""
     return bool(record_type) and record_type.strip().lower() == 'pamuser'
@@ -209,8 +214,8 @@ def format_timestamp(dt: Optional[datetime] = None) -> str:
 
 def format_local_time(dt: datetime) -> str:
     """
-    Format an expiry time with its timezone. Zoom has no equivalent of Slack's
-    ``<!date^…>`` per-viewer timezone token, so the server timezone is shown.
+    Format an expiry time with its timezone. Zoom cards have no per-viewer
+    timezone token, so the server timezone is shown.
     """
     return dt.astimezone().strftime('%Y-%m-%d %H:%M %Z').strip()
 

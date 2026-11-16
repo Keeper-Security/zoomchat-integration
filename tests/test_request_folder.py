@@ -31,7 +31,7 @@ def test_unknown_subcommand_is_not_a_record_request(env):
 
 
 def test_planned_subcommand_not_available_yet(env):
-    env.post(slash(f"one-time-share {UID} need it"))
+    env.post(slash("request-pamworkflow"))
     assert "not available yet" in _reply_text(env)
     assert all(vis for _, _, vis in env.zoom.sent)
 
@@ -173,8 +173,14 @@ def test_expired_keeper_session_is_shown_and_keeps_request_open(env):
     env.keeper.sync_down = lambda: (False, expired)
     aid, _ = _submit_folder(env, '"Staging" need it')
     env.post(click(f"search|{aid}|"))
-    assert "session has expired" in card_text(env.zoom.last_card())
+    card = env.zoom.last_card()
+    assert "session has expired" in card_text(card) and "No folders found" not in card_text(card)
+    assert f"search|{aid}|" in card_values(card) and not env.store.get(aid).searched
 
+    # Session fixed: search works again, then an approve hits an expired session
+    env.keeper.sync_down = lambda: (True, None)
+    env.post(click(f"search|{aid}|"))
+    assert env.store.get(aid).search_results
     env.keeper.grant_result = dict(expired)
     env.post(submit(f"rec|{aid}|0", f"pick|{aid}|"))
     env.post(click(f"approve|{aid}|"))

@@ -11,7 +11,7 @@
 #
 
 """
-Zoom Team Chat API client (replaces Slack's WebClient).
+Zoom Team Chat API client.
 
 - Chatbot token: ``client_credentials`` grant, valid 1 hour, cached.
 - Messages: ``POST/PUT /v2/im/chat/messages``.
@@ -33,6 +33,7 @@ from urllib.parse import quote
 import requests
 
 from .config import ZoomConfig
+from .emoji import emojize
 from .logger import logger
 
 
@@ -346,7 +347,7 @@ class ZoomClient:
             "account_id": account_id,
             "user_jid": user_jid,
             "is_markdown_support": True,
-            "content": content,
+            "content": emojize(content),
         }
 
         response = self._post("POST", "/im/chat/messages", body)
@@ -372,7 +373,7 @@ class ZoomClient:
             "account_id": account_id,
             "user_jid": user_jid,
             "is_markdown_support": True,
-            "content": content,
+            "content": emojize(content),
         }
         response = self._post("PUT", f"/im/chat/messages/{quote(message_id, safe='')}", body)
         if response.status_code not in (200, 204):

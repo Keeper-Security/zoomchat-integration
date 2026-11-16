@@ -36,7 +36,7 @@ server:
 # KEEPER COMMANDER SERVICE MODE
 # ============================================================
 # The service must allow these commands (service-create -c):
-#   search, get, share-record, nsf-share-record, share-folder, nsf-share-folder, list-sf, sync-down, server, list-team
+#   search, get, share-record, nsf-share-record, share-folder, nsf-share-folder, list-sf, one-time-share, share-report, tree, record-add, nsf-record-add, sync-down, server, list-team
 keeper:
   service_url: "http://localhost:8900/api/v2"
   api_key: "your-keeper-api-key"

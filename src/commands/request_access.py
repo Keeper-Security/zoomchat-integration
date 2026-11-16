@@ -10,13 +10,14 @@
 # Contact: ops@keepersecurity.com
 #
 
-"""Handlers for ``/keeper request-record`` and ``/keeper request-folder``."""
+"""Handlers for ``/keeper request-record``, ``request-folder`` and ``one-time-share``."""
 
 from typing import Any, Callable, Dict
 
 from ..keeper_client import KeeperClient
 from ..models import AccessRequest, RequestType
 from ..utils import (
+    is_pam_record_type,
     generate_approval_id, is_valid_uid, parse_command_text,
     sanitize_user_input, MAX_JUSTIFICATION_LENGTH, MAX_IDENTIFIER_LENGTH,
     resolve_approval_channel, format_timestamp,
@@ -42,6 +43,29 @@ def _lookup_record(identifier: str, keeper_client, respond: Callable):
         respond(text_content(
             f"*Invalid UID Type*\n\nThe UID `{identifier}` is a *folder*, not a record.\n\n"
             f"Use `/keeper request-folder {identifier} <justification>` instead."
+        ))
+        return None
+    return record
+
+
+def _lookup_one_time_share_record(identifier: str, keeper_client, respond: Callable):
+    """Record for a one-time share: Classic, non-PAM records only."""
+    record = _lookup_record(identifier, keeper_client, respond)
+    if not record:
+        return None
+    if is_pam_record_type(record.record_type):
+        logger.warning(f"One-time share requested for PAM record {identifier} ({record.record_type})")
+        respond(text_content(
+            f"*PAM Record Not Supported*\n\nThe record `{identifier}` is a *PAM record*. "
+            f"One-time share links cannot be created for PAM records.\n\n"
+            f"Use `/keeper request-record {identifier} <justification>` to request access instead."
+        ))
+        return None
+    if record.is_nsf:
+        respond(text_content(
+            f"*Nested Share Folder Record Not Supported*\n\nThe record `{identifier}` is in a Nested "
+            f"Share Folder. One-time share links can only be created for Classic records.\n\n"
+            f"Use `/keeper request-record {identifier} <justification>` to request access instead."
         ))
         return None
     return record
@@ -88,7 +112,12 @@ def handle_access_request(payload: Dict[str, Any], text: str, request_type: Requ
     account_id = payload.get("accountId", "")
     is_folder = request_type == RequestType.FOLDER
     noun = "folder" if is_folder else "record"
-    subcommand = f"request-{noun}"
+    subcommand = "one-time-share" if request_type == RequestType.ONE_TIME_SHARE else f"request-{noun}"
+    lookup = {
+        RequestType.RECORD: _lookup_record,
+        RequestType.FOLDER: _lookup_folder,
+        RequestType.ONE_TIME_SHARE: _lookup_one_time_share_record,
+    }[request_type]
 
     def respond(content):
         zoom_client.send_ephemeral(user_jid=user_jid, content=content, account_id=account_id)
@@ -126,7 +155,7 @@ def handle_access_request(payload: Dict[str, Any], text: str, request_type: Requ
     item = None
     if is_uid:
         logger.info(f"Fetching {noun} details for UID: {identifier}")
-        item = (_lookup_folder if is_folder else _lookup_record)(identifier, keeper_client, respond)
+        item = lookup(identifier, keeper_client, respond)
         if not item:
             return
 
@@ -161,7 +190,7 @@ def handle_access_request(payload: Dict[str, Any], text: str, request_type: Requ
         request.message_id = post_approval_request(zoom_client, request)
         store.save(request)
         logger.info(
-            f"Submitted [approval_id={approval_id}]: {noun} request for "
+            f"Submitted [approval_id={approval_id}]: {request_type.value.replace('_', ' ')} request for "
             f"{'UID' if is_uid else 'description'} '{identifier}' by {user_name} ({user_id}) "
             f"-> {approvals_channel}"
         )
