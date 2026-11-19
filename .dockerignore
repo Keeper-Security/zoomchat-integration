@@ -1,0 +1,11 @@
+zoom_config.yaml
+data/
+logs/
+tests/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.git/
+.env
+.sf/

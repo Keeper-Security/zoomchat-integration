@@ -1,0 +1,18 @@
+# Secrets and runtime state
+zoom_config.yaml
+data/
+logs/
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Editor tooling
+.sf/
+
+# Internal documents
+sow.md

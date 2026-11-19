@@ -1,0 +1,5 @@
+# Keeper Zoom App Dependencies
+Flask>=3.0.0
+waitress>=3.0.0
+requests>=2.31.0
+PyYAML>=6.0
