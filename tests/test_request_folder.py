@@ -141,7 +141,7 @@ def test_folder_search_select_pam_folder(env):
 
     env.post(click(f"search|{aid}|"))
     card = env.zoom.last_card()
-    assert env.keeper.syncs == 1
+    assert env.keeper.syncs == 0  # plain search uses the cache
     assert "Select a folder" in card_text(card) and "Use Selected Folder" in card_text(card)
 
     env.post(submit(f"rec|{aid}|0", f"pick|{aid}|"))
@@ -164,7 +164,9 @@ def test_folder_deny(env):
     aid, _ = _submit_folder(env, f"{FOLDER_UID} need it")
     env.post(click(f"deny|{aid}|", user=APPROVER))
     assert env.store.get(aid).status == RequestStatus.DENIED
-    assert "Folder access request was denied" in card_text(env.zoom.dms[-1][1])
+    dm = env.zoom.dms[-1][1]
+    assert dm["head"]["text"] == "Folder Access Denied"
+    assert (dm["body"][0]["level"], dm["body"][0]["text"]) == ("ERROR", "Denied by Avery Approver")
 
 
 def test_expired_keeper_session_is_shown_and_keeps_request_open(env):
@@ -172,7 +174,7 @@ def test_expired_keeper_session_is_shown_and_keeps_request_open(env):
                "error": "Commander's Keeper session has expired."}
     env.keeper.sync_down = lambda: (False, expired)
     aid, _ = _submit_folder(env, '"Staging" need it')
-    env.post(click(f"search|{aid}|"))
+    env.post(click(f"resync|{aid}|"))
     card = env.zoom.last_card()
     assert "session has expired" in card_text(card) and "No folders found" not in card_text(card)
     assert f"search|{aid}|" in card_values(card) and not env.store.get(aid).searched

@@ -31,23 +31,23 @@ from ..utils import (
     parse_duration_to_seconds,
 )
 from ..views import (
-    ACTION_APPROVE, ACTION_CHANGE_RECORD, ACTION_DENY, ACTION_PICK, ACTION_SEARCH,
+    ACTION_APPROVE, ACTION_CHANGE_RECORD, ACTION_DENY, ACTION_PICK, ACTION_RESYNC, ACTION_SEARCH,
     ACTION_NEW_RECORD, ACTION_NEW_RECORD_BACK, ACTION_NEW_RECORD_SUBMIT, ACTION_PERMISSION_MODEL,
     SELECT_SELF_DESTRUCT,
-    CS_CANCEL, CS_CREATE, CS_NEXT,
+    CS_BACK, CS_CANCEL, CS_CREATE, CS_FIND, CS_FOLDER_FIND, CS_FOLDER_SYNC, CS_NEXT, CS_SUB_SYNC,
     SELECT_DURATION, SELECT_PERMISSION, SELECT_RECORD, SELECT_ROTATE,
     build_access_denied_content, build_access_granted_content,
     build_invitation_sent_content, build_share_link_content, decode_value, is_pam_target,
     request_duration_options, request_is_permanent_only, request_permission_options,
     default_permission, now_display, select_item, self_destruct_for,
-    text_content, update_approval_card,
+    NOTE_ERROR, NOTE_INFO, NOTE_WARN, notice_content, text_content, update_approval_card,
 )
 from ..logger import logger
 from .forms import submitted_values
 
 
 SELF_APPROVAL_MESSAGE = (
-    ":no_entry_sign: You cannot approve your own request. "
+    "You cannot approve your own request. "
     "Please ask your admin or another team member to review and approve it on your behalf."
 )
 
@@ -64,27 +64,36 @@ class InteractionContext:
         self.account_id = payload.get("accountId", "")
         self.allow_self_approval = config.allow_self_approval
 
-    def reply(self, zoom_client, text: str):
-        zoom_client.send_ephemeral(
-            user_jid=self.user_jid, content=text_content(text), account_id=self.account_id,
-        )
+    def reply(self, zoom_client, text: str, level: Optional[str] = None):
+        """DM the clicking user; with ``level`` the first paragraph is a highlighted note."""
+        content = notice_content(text, level) if level else text_content(text)
+        zoom_client.send_ephemeral(user_jid=self.user_jid, content=content, account_id=self.account_id)
 
 
-def _safe_update_card(zoom_client, request: AccessRequest):
+def _safe_update_card(zoom_client, request: AccessRequest, notice: Optional[str] = None):
     try:
-        update_approval_card(zoom_client, request)
+        update_approval_card(zoom_client, request, notice=notice)
     except Exception as e:
         logger.error(f"Failed to update approval card {request.approval_id}: {e}")
 
 
+def warn_on_card(approval_id: str, payload: Dict[str, Any], text: str, zoom_client, config, store):
+    """Show a "fix your input" warning on the approval card itself instead of in a DM."""
+    ctx = InteractionContext(payload, config)
+    with store.locked(approval_id) as request:
+        if _check_pending(request, ctx, zoom_client):
+            _safe_update_card(zoom_client, request, notice=text)
+
+
 def _check_pending(request: Optional[AccessRequest], ctx: InteractionContext, zoom_client) -> bool:
     if request is None:
-        ctx.reply(zoom_client, "This approval request is no longer available.")
+        ctx.reply(zoom_client, "This approval request is no longer available.", NOTE_WARN)
         return False
     if request.status != RequestStatus.PENDING:
         ctx.reply(
             zoom_client,
-            f"Request `{request.approval_id}` was already processed ({request.status.replace('_', ' ')}).",
+            f"Request {request.approval_id} was already processed ({request.status.replace('_', ' ')}).",
+            NOTE_INFO,
         )
         return False
     return True
@@ -97,7 +106,7 @@ def _is_self_approval(request: AccessRequest, ctx: InteractionContext, zoom_clie
         if ctx.allow_self_approval:
             logger.warning(f"Self-approval allowed for {request.approval_id} by {ctx.user_id} (testing mode)")
             return False
-        ctx.reply(zoom_client, SELF_APPROVAL_MESSAGE)
+        ctx.reply(zoom_client, SELF_APPROVAL_MESSAGE, NOTE_ERROR)
         logger.info(f"Blocked self-approval for {request.approval_id} by {ctx.user_id}")
         return True
     return False
@@ -116,14 +125,15 @@ def handle_interactive_action(payload: Dict[str, Any], zoom_client, config, keep
         handle_approve_action(payload, approval_id, zoom_client, config, keeper_client, store)
     elif action == ACTION_DENY:
         handle_deny_action(payload, approval_id, zoom_client, config, keeper_client, store)
-    elif action == ACTION_SEARCH:
+    elif action in (ACTION_SEARCH, ACTION_RESYNC):
         from .search import handle_search_records
-        handle_search_records(payload, approval_id, zoom_client, config, keeper_client, store)
+        handle_search_records(payload, approval_id, zoom_client, config, keeper_client, store,
+                              resync=action == ACTION_RESYNC)
     elif action == SELECT_RECORD:
         # A radio choice delivered as a plain action instead of a form submit
         _apply_choice(action, approval_id, arg, payload, zoom_client, config, keeper_client, store)
     elif action == ACTION_PICK:
-        InteractionContext(payload, config).reply(zoom_client, "Select an item in the list first.")
+        warn_on_card(approval_id, payload, "Select an item in the dropdown first.", zoom_client, config, store)
     elif action == ACTION_CHANGE_RECORD:
         _clear_record(approval_id, payload, zoom_client, config, store)
     elif action == ACTION_NEW_RECORD:
@@ -135,6 +145,9 @@ def handle_interactive_action(payload: Dict[str, Any], zoom_client, config, keep
     elif action == ACTION_PERMISSION_MODEL:
         from .create_record import choose_permission_model
         choose_permission_model(payload, approval_id, arg, zoom_client, config, store)
+    elif action == CS_BACK:
+        from .create_secret import back_to_folders
+        back_to_folders(payload, zoom_client, keeper_client)
     elif action == CS_CANCEL:
         from .create_secret import cancel_create_secret
         cancel_create_secret(payload, zoom_client)
@@ -144,8 +157,8 @@ def handle_interactive_action(payload: Dict[str, Any], zoom_client, config, keep
 
 def handle_form_submit(payload: Dict[str, Any], zoom_client, config, keeper_client, store):
     """
-    Handle ``chat_message.submit`` from a form card: the search results radio
-    list, the approver's Create New Record form, or the create-secret cards.
+    Handle ``chat_message.submit`` from a form card: the search results (dropdown
+    or a new search), the approver's Create New Record form, or the create-secret cards.
     All inputs arrive in ``payload.object.submit_items``.
     """
     obj = payload.get("object") or {}
@@ -155,7 +168,7 @@ def handle_form_submit(payload: Dict[str, Any], zoom_client, config, keeper_clie
 
     button = next((item["actionItem"].get("value", "") for item in items
                    if isinstance(item.get("actionItem"), dict)), "")
-    if button.split("|", 1)[0] in (CS_NEXT, CS_CREATE):
+    if button.split("|", 1)[0] in (CS_FOLDER_FIND, CS_FOLDER_SYNC, CS_NEXT, CS_FIND, CS_SUB_SYNC, CS_CREATE):
         from .create_secret import handle_create_secret_submit
         handle_create_secret_submit(button, items, payload, zoom_client, config, keeper_client)
         return
@@ -168,6 +181,12 @@ def handle_form_submit(payload: Dict[str, Any], zoom_client, config, keeper_clie
         "accountId": payload.get("account_id", ""),
     }
     action, approval_id, _ = decode_value(button)
+    if action in (ACTION_SEARCH, ACTION_RESYNC):
+        from .search import handle_search_records
+        query = submitted_values(items).get("search_query", "")
+        handle_search_records(ctx_payload, approval_id, zoom_client, config, keeper_client, store,
+                              query=query, resync=action == ACTION_RESYNC)
+        return
     if action == ACTION_NEW_RECORD_SUBMIT:
         from .create_record import handle_create_record_submit
         handle_create_record_submit(approval_id, items, ctx_payload, zoom_client, config, keeper_client, store)
@@ -176,7 +195,7 @@ def handle_form_submit(payload: Dict[str, Any], zoom_client, config, keeper_clie
     choice = submitted_values(items, (SELECT_RECORD,)).get(SELECT_RECORD, "")
     if not choice:
         if button:
-            InteractionContext(ctx_payload, config).reply(zoom_client, "Select an item in the list first.")
+            warn_on_card(approval_id, ctx_payload, "Select an item in the dropdown first.", zoom_client, config, store)
         else:
             logger.warning("Form submit without a choice or button")
         return
@@ -236,7 +255,7 @@ def _apply_choice(kind: str, approval_id: str, arg: str, payload: Dict[str, Any]
             if isinstance(item, KeeperFolder) and not item.is_nsf:
                 item.is_pam, pam_error = keeper_client.is_pam_user_folder(item.uid)
                 if pam_error:
-                    ctx.reply(zoom_client, f"*Could not check the folder*\n\n{pam_error.get('error')}")
+                    ctx.reply(zoom_client, f"*Could not check the folder*\n\n{pam_error.get('error')}", NOTE_ERROR)
                     return
             select_item(request, item)
             logger.debug(f"{approval_id}: approver {ctx.user_name} selected {request.item_noun} {item.uid}")
@@ -338,6 +357,7 @@ def _approve_one_time_share(request: AccessRequest, record, permission, duration
             zoom_client,
             f"*Cannot Create One-Time Share*\n\n{error_message}\n\n*Request ID:* `{approval_id}`\n"
             f"*Record:* {record.title}\n\nThe approval request remains active.",
+            NOTE_ERROR,
         )
     else:
         request.status = RequestStatus.FAILED
@@ -373,6 +393,7 @@ def handle_approve_action(payload, approval_id, zoom_client, config, keeper_clie
                 zoom_client,
                 f"*Cannot approve directly*\n\nThis request uses a description, not a UID. "
                 f"Please use *Search {Noun}s* and select the correct {noun} first.",
+                NOTE_WARN,
             )
             return
 
@@ -410,7 +431,8 @@ def handle_approve_action(payload, approval_id, zoom_client, config, keeper_clie
                 "Could not resolve the requester's Zoom email. Check the app's user-read scope "
                 "and that the admin re-added the app, then approve again."
             )
-            ctx.reply(zoom_client, f"*Access grant failed*\n\nCould not look up the email of {request.requester_name}.")
+            ctx.reply(zoom_client, f"*Access grant failed*\n\nCould not look up the email of {request.requester_name}.",
+                      NOTE_ERROR)
             return
 
         try:
@@ -517,6 +539,7 @@ def handle_approve_action(payload, approval_id, zoom_client, config, keeper_clie
                 zoom_client,
                 f"*Access grant failed:*\n\nThe selected user is the current owner of this record "
                 f"and already has full permissions.\n\n*Request ID:* `{approval_id}`\n*Record:* {record.title}",
+                NOTE_ERROR,
             )
             logger.info(
                 f"Blocked [approval_id={approval_id}]: requester is record owner (UID: {record.uid}), "
@@ -532,6 +555,7 @@ def handle_approve_action(payload, approval_id, zoom_client, config, keeper_clie
                 zoom_client,
                 f"*Cannot Grant Access*\n\n{error_message}\n\n*Request ID:* `{approval_id}`\n"
                 f"*{Noun}:* {record.title}\n\nThe approval request remains active.",
+                NOTE_ERROR,
             )
         else:
             request.status = RequestStatus.FAILED

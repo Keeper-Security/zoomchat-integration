@@ -22,6 +22,7 @@ create-secret flows: ``search``, ``get``, ``share-record``,
 
 import re
 import shlex
+import threading
 import time
 import requests
 from typing import List, Optional, Dict, Any, Tuple
@@ -61,6 +62,12 @@ class KeeperClient:
             self.session.headers.update({'api-key': self.api_key})
 
         self.server_domain = self._fetch_server_domain() if fetch_server_domain else "keepersecurity.com"
+
+        # share-report -f takes ~10 s and covers every user, so its rows are reused for a while
+        # (cleared by a successful sync-down, i.e. "Re-Sync Vault")
+        self._share_report_rows: Optional[List[Dict[str, Any]]] = None
+        self._share_report_at = 0.0
+        self._share_report_lock = threading.Lock()
 
     def health_check(self) -> bool:
         """
@@ -248,7 +255,7 @@ class KeeperClient:
     def search_records(
         self,
         query: str,
-        limit: int = 20,
+        limit: Optional[int] = None,
         for_one_time_share: bool = False,
     ) -> Tuple[List[KeeperRecord], Optional[Dict[str, Any]]]:
         """
@@ -398,7 +405,7 @@ class KeeperClient:
     def search_folders(
         self,
         query: str,
-        limit: int = 20,
+        limit: Optional[int] = None,
     ) -> Tuple[List[KeeperFolder], Optional[Dict[str, Any]]]:
         """
         Search shared folders (Classic and Nested Share Folders) with
@@ -422,7 +429,7 @@ class KeeperClient:
         data = result_data.get('data', [])
         if not isinstance(data, list):
             logger.debug(f"Unexpected data format: {type(data)}")
-            return folders
+            return folders, None
         for item in data:
             if not isinstance(item, dict):
                 continue
@@ -432,7 +439,7 @@ class KeeperClient:
                 folders.append(KeeperFolder(
                     uid=uid, name=name, folder_type=folder_type, is_nsf=self._folder_is_nsf(folder_type),
                 ))
-                if len(folders) >= limit:
+                if limit and len(folders) >= limit:
                     break
         logger.debug(f"Got {len(folders)} folders from search")
         return folders, None
@@ -493,7 +500,7 @@ class KeeperClient:
         return isinstance(data, list) and len(data) > 0, None
 
     def _parse_search_records_results(
-        self, result_data: Dict, limit: int, for_one_time_share: bool = False,
+        self, result_data: Dict, limit: Optional[int], for_one_time_share: bool = False,
     ) -> List[KeeperRecord]:
         """
         Parse search command results for records, including Nested Share
@@ -523,7 +530,7 @@ class KeeperClient:
                     notes=notes,
                     is_nsf=self._record_is_nsf(details),
                 ))
-                if len(records) >= limit:
+                if limit and len(records) >= limit:
                     break
 
         logger.debug(f"Got {len(records)} records from search")
@@ -572,6 +579,7 @@ class KeeperClient:
             return False, None
         if result_data.get('status') == 'success':
             logger.ok("Vault synced from server")
+            self._share_report_rows = None  # sharing may have changed
             return True, None
         error = self._error_message(result_data)
         logger.error(f"sync-down failed: {error}")
@@ -1054,25 +1062,15 @@ class KeeperClient:
     def get_user_shared_folders(self, user_email: str) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
         """
         Shared folders shared with ``user_email`` (``share-report -f``), as
-        ``{uid, name, type, is_nsf}``. Returns ``(folders, error)``.
-
-        Runs ``sync-down`` first so folders shared since Commander's last sync
-        are included.
+        ``{uid, name, type, is_nsf}``. Returns ``(folders, error)``. Uses Commander's
+        current cache; run :meth:`sync_down` first for folders shared since its last sync.
+        The report is reused for ``SHARE_REPORT_TTL`` seconds (it takes ~10 s to build).
         """
-        sync_failure = self._sync_before_share(f"share-report for {user_email}")
-        if sync_failure:
-            return [], sync_failure
-        result_data, err = self._submit_and_poll("share-report -f --format=json", max_wait=30)
-        failure = self._commander_failure(result_data, err)
-        if failure:
-            return [], failure
-        if err or result_data.get('status') != 'success':
-            logger.warning(f"share-report failed: {err.get('error') if err else self._error_message(result_data)}")
-            return [], None
-
-        data = result_data.get('data', [])
+        rows, error = self._share_report()
+        if error:
+            return [], error
         folders, seen = [], set()
-        for item in data if isinstance(data, list) else []:
+        for item in rows:
             if not isinstance(item, dict) or str(item.get('Shared To', '')).lower() != user_email.lower():
                 continue
             uid, name = item.get('Folder UID', ''), item.get('Folder Name', '')
@@ -1086,6 +1084,25 @@ class KeeperClient:
         logger.debug(f"Retrieved {len(folders)} shared folder(s) for {user_email}")
         return folders, None
 
+    SHARE_REPORT_TTL = 600
+
+    def _share_report(self) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        """``share-report -f`` rows for all users, from the cache when it is recent enough."""
+        with self._share_report_lock:
+            if self._share_report_rows is not None and time.time() - self._share_report_at < self.SHARE_REPORT_TTL:
+                return self._share_report_rows, None
+            result_data, err = self._submit_and_poll("share-report -f --format=json", max_wait=30)
+            failure = self._commander_failure(result_data, err)
+            if failure:
+                return [], failure
+            if err or result_data.get('status') != 'success':
+                logger.warning(f"share-report failed: {err.get('error') if err else self._error_message(result_data)}")
+                return [], None
+            data = result_data.get('data', [])
+            self._share_report_rows = [row for row in data if isinstance(row, dict)] if isinstance(data, list) else []
+            self._share_report_at = time.time()
+            return self._share_report_rows, None
+
     def list_subfolders(self, shared_folder_uid: str) -> List[Dict[str, Any]]:
         """All subfolders inside a shared folder (``tree -s -v``) as ``{uid, name, path, is_nsf}``."""
         result_data, err = self._submit_and_poll(f"tree -s -v {shlex.quote(shared_folder_uid)}", max_wait=20)
@@ -1098,9 +1115,10 @@ class KeeperClient:
             if not isinstance(item, dict) or not item.get('uid') or not item.get('name'):
                 continue
             name = item['name']
+            kind = f"{item.get('kind', '')} {item.get('type', '')}".lower()
             subfolders.append({
                 'uid': item['uid'], 'name': name, 'path': item.get('path', name),
-                'is_nsf': '[nested share folder]' in name.lower(),
+                'is_nsf': 'nested' in kind or '[nested share folder]' in name.lower(),
             })
         return subfolders
 

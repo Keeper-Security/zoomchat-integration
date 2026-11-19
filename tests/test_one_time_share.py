@@ -41,7 +41,7 @@ def test_card_offers_view_or_edit_and_no_permanent_link(env):
     selected = [i for i in card_text_items(card) if i.get("type") == "select" and "selected_item" in i
                 and i["selected_item"]["value"].startswith(f"dur|{aid}|")]
     assert selected[0]["selected_item"]["value"] == f"dur|{aid}|5m"
-    assert "submitted" in _reply_text(env)
+    assert "One-Time Share Request Submitted" in _reply_text(env)
 
 
 def test_approve_creates_link_and_dms_it_only_to_requester(env):
@@ -120,4 +120,23 @@ def test_commander_rejection_keeps_request_open(env):
 def test_deny(env):
     aid, _ = _submit_share(env, f"{UID} need it")
     env.post(click(f"deny|{aid}|", user=APPROVER))
-    assert "One-time share request was denied" in card_text(env.zoom.dms[-1][1])
+    dm = env.zoom.dms[-1][1]
+    assert dm["head"]["text"] == "One-Time Share Denied" and dm["body"][0]["level"] == "ERROR"
+
+
+def test_commander_error_codes_keep_underscores():
+    from src.views import _note
+    note = _note("Unexpected error: not_allowed_one_time_share: You don't have permission", "ERROR")
+    assert note["text"] == "Unexpected error: not\\_allowed\\_one\\_time\\_share: You don't have permission"
+    uid_note = _note("Record Ly-ES_5h-ibzJ3fHgKIktg failed; see `a_b`", "ERROR")
+    assert uid_note["text"] == "Record Ly-ES\\_5h-ibzJ3fHgKIktg failed; see `a_b`"  # code spans untouched
+
+
+def test_share_link_sent_as_one_markdown_link():
+    from src.models import AccessRequest
+    from src.views import build_share_link_content
+    request = AccessRequest(approval_id="APR-1", requester_id="u", requester_jid="j", requester_name="R",
+                            identifier="x", is_uid=True, justification="j", created_at="now")
+    url = "https://keepersecurity.com/vault/share/#O_OawEQ0oBt1gub_EU9rFq"
+    texts = [i.get("text", "") for i in build_share_link_content(request, url)["body"]]
+    assert f"*Share Link:*\n<{url}>" in texts  # whole URL in <...>, underscores untouched

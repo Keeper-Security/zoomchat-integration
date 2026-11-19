@@ -131,3 +131,17 @@ def test_create_record_without_folder_and_self_destruct(make_client):
 
     kc.create_record("t", is_nsf=True, login="bob", generate_password=True, self_destruct="1h")
     assert kc.session.commands[-1] == "nsf-record-add --record-type login --title t login=bob password=$GEN -f"
+
+
+def test_share_report_reused_until_sync(make_client):
+    rows = [{"Shared To": "a@b.com", "Folder UID": UID, "Folder Name": "Prod", "Type": "Shared Folder"},
+            {"Shared To": "c@d.com", "Folder UID": "X" * 22, "Folder Name": "Other", "Type": "Nested Share Folder"}]
+    kc = make_client(results={"share-report": {"status": "success", "data": rows},
+                              "sync-down": {"status": "success", "message": []}})
+    assert [f["name"] for f in kc.get_user_shared_folders("a@b.com")[0]] == ["Prod"]
+    assert [f["name"] for f in kc.get_user_shared_folders("c@d.com")[0]] == ["Other"]  # same report, other user
+    assert sum(c.startswith("share-report") for c in kc.session.commands) == 1
+
+    kc.sync_down()  # Re-Sync Vault: sharing may have changed
+    kc.get_user_shared_folders("a@b.com")
+    assert sum(c.startswith("share-report") for c in kc.session.commands) == 2

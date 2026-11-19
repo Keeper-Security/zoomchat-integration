@@ -24,7 +24,7 @@ from ..utils import (
 )
 from ..views import (
     build_request_submitted_content, build_usage_content, post_approval_request,
-    select_item, text_content,
+    APP_NAME, NOTE_WARN, notice_content, select_item,
 )
 from ..logger import logger
 
@@ -33,14 +33,14 @@ def _lookup_record(identifier: str, keeper_client, respond: Callable):
     """Record for a UID request, or None after telling the requester why not."""
     record = keeper_client.get_record_by_uid(identifier)
     if not record:
-        respond(text_content(
+        respond(notice_content(
             f"*Record Not Found*\n\nNo record found with UID: `{identifier}`\n\n"
             f"Please verify the UID and try again."
         ))
         return None
     if record.record_type in KeeperClient._FOLDER_ITEM_TYPES:
         logger.warning(f"UID {identifier} is a folder, not a record")
-        respond(text_content(
+        respond(notice_content(
             f"*Invalid UID Type*\n\nThe UID `{identifier}` is a *folder*, not a record.\n\n"
             f"Use `/keeper request-folder {identifier} <justification>` instead."
         ))
@@ -55,14 +55,14 @@ def _lookup_one_time_share_record(identifier: str, keeper_client, respond: Calla
         return None
     if is_pam_record_type(record.record_type):
         logger.warning(f"One-time share requested for PAM record {identifier} ({record.record_type})")
-        respond(text_content(
+        respond(notice_content(
             f"*PAM Record Not Supported*\n\nThe record `{identifier}` is a *PAM record*. "
             f"One-time share links cannot be created for PAM records.\n\n"
             f"Use `/keeper request-record {identifier} <justification>` to request access instead."
         ))
         return None
     if record.is_nsf:
-        respond(text_content(
+        respond(notice_content(
             f"*Nested Share Folder Record Not Supported*\n\nThe record `{identifier}` is in a Nested "
             f"Share Folder. One-time share links can only be created for Classic records.\n\n"
             f"Use `/keeper request-record {identifier} <justification>` to request access instead."
@@ -75,14 +75,14 @@ def _lookup_folder(identifier: str, keeper_client, respond: Callable):
     """Folder for a UID request (with PAM detection), or None after telling the requester why not."""
     folder = keeper_client.get_folder_by_uid(identifier)
     if not folder:
-        respond(text_content(
+        respond(notice_content(
             f"*Folder Not Found*\n\nNo folder found with UID: `{identifier}`\n\n"
             f"Please verify the UID and try again."
         ))
         return None
     if folder.folder_type == "record":
         logger.warning(f"UID {identifier} is a record, not a folder")
-        respond(text_content(
+        respond(notice_content(
             f"*Invalid UID Type*\n\nThe UID `{identifier}` is a *record*, not a folder.\n\n"
             f"Use `/keeper request-record {identifier} <justification>` instead."
         ))
@@ -90,7 +90,7 @@ def _lookup_folder(identifier: str, keeper_client, respond: Callable):
     if not folder.is_nsf:
         is_pam, pam_error = keeper_client.is_pam_user_folder(identifier)
         if pam_error:
-            respond(text_content(
+            respond(notice_content(
                 f"*Folder request could not be submitted.*\n\n{pam_error.get('error')}\n\n"
                 f"*Folder UID:* `{identifier}`"
             ))
@@ -119,7 +119,16 @@ def handle_access_request(payload: Dict[str, Any], text: str, request_type: Requ
         RequestType.ONE_TIME_SHARE: _lookup_one_time_share_record,
     }[request_type]
 
+    request_title = {
+        RequestType.RECORD: "Record Access Request",
+        RequestType.FOLDER: "Folder Access Request",
+        RequestType.ONE_TIME_SHARE: "One-Time Share Request",
+    }[request_type]
+
     def respond(content):
+        # Replies about this request are titled after it instead of the generic app name
+        if content.get("head", {}).get("text") == APP_NAME:
+            content["head"]["text"] = request_title
         zoom_client.send_ephemeral(user_jid=user_jid, content=content, account_id=account_id)
 
     identifier, justification = parse_command_text(text)
@@ -129,20 +138,21 @@ def handle_access_request(payload: Dict[str, Any], text: str, request_type: Requ
         return
 
     if not justification:
-        respond(text_content(
+        respond(notice_content(
             f"Justification is required.\n\n"
-            f"*Usage:* `/keeper {subcommand} \"{identifier}\" Justification message or ticket number`"
+            f"*Usage:* `/keeper {subcommand} \"{identifier}\" Justification message or ticket number`",
+            NOTE_WARN,
         ))
         return
 
     identifier, id_valid, id_error = sanitize_user_input(identifier, MAX_IDENTIFIER_LENGTH)
     if not id_valid:
-        respond(text_content(f"*Invalid Input*\n\n{id_error}"))
+        respond(notice_content(f"*Invalid Input*\n\n{id_error}"))
         return
 
     justification, just_valid, just_error = sanitize_user_input(justification, MAX_JUSTIFICATION_LENGTH)
     if not just_valid:
-        respond(text_content(f"*Invalid Input*\n\n{just_error}"))
+        respond(notice_content(f"*Invalid Input*\n\n{just_error}"))
         return
 
     if not identifier or not justification:
@@ -197,7 +207,7 @@ def handle_access_request(payload: Dict[str, Any], text: str, request_type: Requ
         respond(build_request_submitted_content(request))
     except Exception as e:
         logger.error(f"Error posting approval request: {e}")
-        respond(text_content(
+        respond(notice_content(
             f"*Failed to submit access request*\n\n"
             f"Please try again or contact support.\n\nError: {str(e)}"
         ))

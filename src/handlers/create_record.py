@@ -118,7 +118,7 @@ def handle_create_record_submit(approval_id: str, items: List[Dict[str, Any]], c
         try:
             zoom_client.edit_message(
                 message_id=request.message_id, to_jid=request.channel_jid,
-                content=build_searching_card(request, ":hourglass_flowing_sand: *Creating record...*"),
+                content=build_searching_card(request, "*Creating record...*"),
                 user_jid=request.requester_jid, account_id=request.account_id,
             )
         except Exception as e:

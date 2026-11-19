@@ -32,8 +32,10 @@ and DMs the link with a security notice to the requester. The link is never post
 stored in `data/approvals.json`.
 
 `/keeper create-secret` uses two form cards in the user's 1:1 chat with the bot:
-1. Pick one of the shared folders shared with the user (`share-report -f`, filtered to their email).
-2. Fill in Title (required), Login, Password, Website Address, Notes and an optional subfolder (`tree -s -v`).
+1. Pick one of the shared folders shared with the user (`share-report -f`, filtered to their email) from a
+   dropdown, with a *Find shared folder* search box; *Next* loads the subfolders.
+2. Choose where to save it (optional subfolder dropdown of one-line paths, with a *Find folder* box; `tree -s -v`),
+   then fill in Title (required), Login, Password, Website Address and Notes.
    A blank password is auto-generated (`password=$GEN`); a typed password passes through Zoom, and the card says so.
 3. `record-add` (Classic) or `nsf-record-add` (Nested Share Folder) creates the record. The user sees the new
    record UID, and a notice (user, title, UID, folder; no secrets) is posted to the approvals channel.
@@ -61,8 +63,10 @@ Nothing is stored on the server for this flow, and submitted values are never lo
    to the channel of the requester's Keeper team instead.
    - **UID request:** record details, a *Permission Level* dropdown, *Grant Access For* (duration),
      and **Approve** / **Deny** buttons.
-   - **Description request:** **Search Records** / **Deny**. *Search* (and *Search Again*) runs `sync-down`, then `search -c r "<description>"`, so records just created in the vault are found
-     and lists up to 10 results as a radio group (`[Classic]` / `[NSF]` badge, title, UID) in a Zoom form card;
+   - **Description request:** **Search Records** / **Re-Sync Vault** / **Deny**. *Search* runs `search -c r "<description>"` against Commander's
+     vault cache; *Re-Sync Vault* runs `sync-down` first, for records created or shared since the last sync (create-secret has the same button),
+     and lists up to 20 results (with the real total shown) in a dropdown (Classic / NSF badge, title, UID) in a Zoom form card.
+     A *Search records* box above it starts with the requester's description; the approver can edit it and search again;
      *Use Selected Record* submits the choice (`chat_message.submit`), and *Change Record* goes back to the list. After a record is picked, the permission and
      duration controls appear.
    - **Create New Record** (record requests by description only): from the results
@@ -94,7 +98,7 @@ Every outcome is written to the audit log.
 |---|---|
 | Events | HTTPS webhook `POST /zoom/webhook`, verified with the Secret Token (`x-zm-signature`, 5-minute replay window) and acknowledged immediately; work runs on a thread pool |
 | Request state | Zoom sends only the clicked value, so requests and approver choices are stored in `data/approvals.json` ([src/approval_store.py](src/approval_store.py)) and survive restarts |
-| Search results | Form card in the channel: radio group of results + submit button (`chat_message.submit` event) |
+| Search results | Form card in the channel: editable search box + dropdown of results + submit button (`chat_message.submit` event); Zoom dropdowns can't be filtered by typing |
 | Bare command | Shows usage (chatbots can't open modals) |
 | User email | `zoom.user_emails` in the config, then `GET /v2/users/me` with the OAuth token stored at `/zoom/oauth/callback` when the app is added (a user-managed token can only read the user who added the app) |
 | Private replies | DM from the bot (`visible_to_user` needs an admin-managed app) |
@@ -214,7 +218,7 @@ channel → Search Records → select a record → Approve → the requester get
 The request and response shapes follow Zoom's chatbot documentation but have not been run against a live
 account yet. Check these during the first setup:
 
-- The `chat_message.submit` payload for the radio group (`submit_items[]`). The handler logs the raw items at DEBUG and
+- The `chat_message.submit` payload for the results dropdown (`submit_items[]`). The handler logs the raw items at DEBUG and
   accepts the value under `value`, `selected_option.value` or `selected_item.value`.
 - `divider` and `alert` blocks, and `radio_buttons` inside a form card, in the chatbot (not App Card Builder) message API.
 - The `interactive_message_select` payload (`selectedItems[].value`) and how dropdown `selected_item`

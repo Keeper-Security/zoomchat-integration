@@ -33,7 +33,6 @@ from urllib.parse import quote
 import requests
 
 from .config import ZoomConfig
-from .emoji import emojize
 from .logger import logger
 
 
@@ -347,7 +346,7 @@ class ZoomClient:
             "account_id": account_id,
             "user_jid": user_jid,
             "is_markdown_support": True,
-            "content": emojize(content),
+            "content": content,
         }
 
         response = self._post("POST", "/im/chat/messages", body)
@@ -373,7 +372,7 @@ class ZoomClient:
             "account_id": account_id,
             "user_jid": user_jid,
             "is_markdown_support": True,
-            "content": emojize(content),
+            "content": content,
         }
         response = self._post("PUT", f"/im/chat/messages/{quote(message_id, safe='')}", body)
         if response.status_code not in (200, 204):
@@ -381,6 +380,7 @@ class ZoomClient:
                 f"Zoom edit message failed: HTTP {response.status_code} {response.text[:300]}",
                 response.status_code, response.text,
             )
+        logger.debug(f"Edited message {message_id} (HTTP {response.status_code})")
 
     def send_dm(self, user_jid: str, content: Dict[str, Any], account_id: str) -> bool:
         """Send a message to the user's 1:1 chat with the bot."""

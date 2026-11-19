@@ -223,6 +223,12 @@ class AccessRequest:
     searched: bool = False
     search_results: List[Dict[str, Any]] = field(default_factory=list)
 
+    search_query: Optional[str] = None
+    """What the approver last searched for (defaults to ``identifier``)"""
+
+    search_total: int = 0
+    """Matches Commander found; ``search_results`` keeps at most a dropdown's worth"""
+
     banner: Optional[str] = None
     """Warning shown on the card (e.g., last approval attempt failed)"""
 
@@ -253,6 +259,10 @@ class AccessRequest:
     @property
     def is_one_time_share(self) -> bool:
         return self.request_type == RequestType.ONE_TIME_SHARE.value
+
+    @property
+    def current_query(self) -> str:
+        return self.search_query or self.identifier
 
     @property
     def item_noun(self) -> str:

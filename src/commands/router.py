@@ -21,7 +21,7 @@ from typing import Any, Dict
 from ..logger import logger
 from ..models import RequestType
 from ..utils import is_channel_jid
-from ..views import build_usage_content, text_content
+from ..views import NOTE_INFO, NOTE_WARN, build_usage_content, notice_content
 from ..handlers.create_secret import handle_create_secret_command
 from .request_access import handle_access_request
 
@@ -60,7 +60,7 @@ def handle_command(payload: Dict[str, Any], zoom_client, config, keeper_client, 
         else:
             hint = ("Run this command inside the approvals channel (with the app added to it) "
                     "to see that channel's JID.")
-        respond(text_content(f"*Keeper app setup: approvals channel not configured*\n\n{hint}"))
+        respond(notice_content(f"*Keeper app setup: approvals channel not configured*\n\n{hint}", NOTE_WARN))
         return
 
     if subcommand in ACCESS_SUBCOMMANDS:
@@ -71,6 +71,6 @@ def handle_command(payload: Dict[str, Any], zoom_client, config, keeper_client, 
     elif subcommand in HELP_SUBCOMMANDS:
         respond(build_usage_content())
     elif subcommand in PLANNED_SUBCOMMANDS:
-        respond(build_usage_content(f"`{subcommand}` is not available yet."))
+        respond(build_usage_content(f"{subcommand} is not available yet.", NOTE_INFO))
     else:
-        respond(build_usage_content(f"Unknown command `{subcommand}`."))
+        respond(build_usage_content(f"Unknown command: {subcommand}"))

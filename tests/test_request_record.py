@@ -61,6 +61,15 @@ def test_unknown_uid(env):
     env.post(slash("request-record ZZZZZZZZZZZZZZZZZZZZZZ need it"))
     (msg,) = env.zoom.ephemerals_for(REQUESTER["userJid"])
     assert "Record Not Found" in card_text(msg)
+    assert msg["head"]["text"] == "Record Access Request"
+    note = msg["body"][0]
+    assert (note["type"], note["level"], note["text"]) == ("alert", "ERROR", "Record Not Found")
+
+
+def test_missing_justification_is_a_warning(env):
+    env.post(slash(f"request-record {UID}"))
+    (msg,) = env.zoom.ephemerals_for(REQUESTER["userJid"])
+    assert msg["body"][0]["level"] == "WARN" and msg["body"][0]["text"].startswith("*Warning:* ")
 
 
 def test_parse_command_text():
@@ -84,7 +93,7 @@ def test_uid_request_approve_with_selections(env):
     assert f"approve|{aid}|" in card_values(card)
     assert "Prod DB" in card_text(card)
     # Requester got the "submitted" confirmation
-    assert "submitted" in card_text(env.zoom.ephemerals_for(REQUESTER["userJid"])[0])
+    assert env.zoom.ephemerals_for(REQUESTER["userJid"])[0]["head"]["text"] == "Record Access Request Submitted"
 
     env.post(choose(f"perm|{aid}|can_edit"))
     env.post(choose(f"dur|{aid}|1h"))
@@ -98,7 +107,7 @@ def test_uid_request_approve_with_selections(env):
     assert "Approved" in card_text(env.zoom.last_card())
     (dm_to, dm) = env.zoom.dms[-1]
     assert dm_to == REQUESTER["userJid"]
-    assert "Access Granted" in card_text(dm) and f"#detail/{UID}" in card_text(dm)
+    assert dm["head"]["text"] == "Record Access Granted" and f"#detail/{UID}" in card_text(dm)
 
 
 def test_permanent_only_permission_ignores_duration(env):
@@ -243,7 +252,7 @@ def test_description_search_form_submit_and_change_record(env):
     # Submit without choosing: nothing selected, approver is told to pick one
     env.post(submit(None, f"pick|{aid}|"))
     assert env.store.get(aid).selected_item is None
-    assert "Select an item" in card_text(env.zoom.ephemerals_for(APPROVER["userJid"])[-1])
+    assert "Select an item in the dropdown first" in card_text(env.zoom.last_card())  # on the card, not a DM
 
     env.post(submit(f"rec|{aid}|0", f"pick|{aid}|"))
     card = env.zoom.last_card()
@@ -256,16 +265,20 @@ def test_description_search_form_submit_and_change_record(env):
     assert f"rec|{aid}|0" in card_values(env.zoom.last_card())
 
 
-def test_every_search_runs_sync_down_first(env):
+def test_only_resync_vault_runs_sync_down(env):
     aid, _ = _submit(env, '"nsf" need the secret')
+    assert f"resync|{aid}|" in card_values(env.zoom.sent[0][1])  # offered before the first search
+
+    edits_before = len(env.zoom.edits)
     env.post(click(f"search|{aid}|"))
-    assert env.keeper.syncs == 1
-    assert "Syncing the vault" in card_text(env.zoom.edits[-2][1])
+    assert env.keeper.syncs == 0
+    assert len(env.zoom.edits) == edits_before + 1  # results only: no "Searching..." edit to race with
+    card = env.zoom.last_card()
+    assert f"rec|{aid}|0" in card_values(card) and f"resync|{aid}|" in card_values(card)
+
+    env.post(click(f"resync|{aid}|"))
+    assert env.keeper.syncs == 1 and "Syncing the vault" in card_text(env.zoom.edits[-2][1])
     assert f"rec|{aid}|0" in card_values(env.zoom.last_card())
-
-    env.post(click(f"search|{aid}|"))
-    assert env.keeper.syncs == 2
-
 
 def test_form_submit_blocks_self_approval_by_jid(env):
     aid, _ = _submit(env, '"nsf" need the secret')
@@ -310,3 +323,47 @@ def test_self_approval_allowed_when_configured(env):
     env.post(click(f"approve|{aid}|", user=REQUESTER))
     assert len(env.keeper.grants) == 1
     assert env.store.get(aid).status == RequestStatus.APPROVED
+
+
+def _search_submit(aid, query, user=APPROVER):
+    items = [{"actionItem": {"text": "Search", "value": f"search|{aid}|"}},
+             {"plain_text_input": {"action_id": "search_query", "value": query}}]
+    return {"event": "chat_message.submit",
+            "payload": {"account_id": "acct-1", "operator_id": user["userId"],
+                        "object": {"to_jid": CHANNEL, "user_jid": user["userJid"], "submit_items": items}}}
+
+
+def test_results_are_a_dropdown_with_editable_search(env):
+    aid, _ = _submit(env, '"prod" need it')
+    env.post(click(f"search|{aid}|"))
+    card = env.zoom.last_card()
+    items = [i for s in card["body"] for i in s.get("sections", [])]
+    assert not any(i["type"] == "radio_buttons" for i in items)
+    search_box = next(i for i in items if i.get("action_id") == "search_query")
+    assert search_box["value"] == "prod"
+    assert next(i for i in items if i["type"] == "select")["select_items"][0]["value"] == f"rec|{aid}|0"
+
+    # Approver changes the search text; the requester's description is kept on the request
+    env.post(_search_submit(aid, "nsf"))
+    request = env.store.get(aid)
+    assert request.search_query == "nsf" and request.identifier == "prod"
+    assert request.search_results[0]["uid"] == NSF_UID
+    assert '"value": "nsf"' in card_text(env.zoom.last_card())
+
+    env.post(_search_submit(aid, "   "))
+    assert "Enter something to search for" in card_text(env.zoom.last_card())
+
+
+def test_dropdown_capped_at_20_with_real_total(env):
+    from src.models import KeeperRecord
+    for i in range(157):
+        uid = f"R{i:021d}"
+        env.keeper.records[uid] = KeeperRecord(uid=uid, title=f"Bulk {i}", record_type="login")
+    aid, _ = _submit(env, '"bulk" need it')
+    env.post(click(f"search|{aid}|"))
+    card = env.zoom.last_card()
+    select = next(i for s in card["body"] for i in s.get("sections", []) if i["type"] == "select")
+    assert len(select["select_items"]) == 20
+    note = next(i for s in card["body"] for i in s.get("sections", []) if i["type"] == "alert")
+    assert (note["level"], note["text"]) == (
+        "INFO", '157 record(s) match "bulk"; showing the first 20. Change the search to narrow it down.')

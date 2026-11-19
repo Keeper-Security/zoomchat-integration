@@ -74,18 +74,3 @@ def test_users_me_never_returns_other_users_email(tmp_path):
     zc = make(tmp_path, FakeSession(me=me))
     assert zc.get_user_email("b_other") is None
 
-
-def test_messages_are_sent_with_emoji_not_shortcodes(tmp_path):
-    zc = make(tmp_path, FakeSession())
-    sent = []
-
-    def fake_post(method, path, body):
-        sent.append(body["content"])
-        return FakeResponse(200, {"message_id": "m1"})
-
-    zc._post = fake_post
-    content = {"body": [{"type": "message", "text": ":lock: Recommended :not_a_code:"}]}
-    zc.send_message("u@xmpp.zoom.us", content, "u@xmpp.zoom.us", "acct")
-    zc.edit_message("m1", "u@xmpp.zoom.us", content, "u@xmpp.zoom.us", "acct")
-    assert [c["body"][0]["text"] for c in sent] == ["\U0001F512 Recommended :not_a_code:"] * 2
-    assert content["body"][0]["text"].startswith(":lock:")  # caller's content is not modified
